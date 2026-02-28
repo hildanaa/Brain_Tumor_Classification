@@ -15,7 +15,7 @@ The system includes:
 1. Clone the repository:
 
 
-git clone https://github.com/fernandaxhernandez/brain-tumor-assistant.git
+git clone https://github.com/hildanaa/Brain_Tumor_Classification.git
 
 cd brain-tumor-assistant
 

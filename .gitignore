@@ -1,0 +1,27 @@
+# --- Python ---
+__pycache__/
+*.pyc
+
+# --- Virtual envs ---
+.venv/
+venv/
+.env
+
+# --- OS / IDE ---
+.DS_Store
+.vscode/
+
+# --- Data (DO NOT COMMIT) ---
+Brain Tumor data/
+data/
+*.zip
+*.rar
+
+# --- Outputs (DO NOT COMMIT) ---
+outputs/
+*.pt
+*.pth
+*.onnx
+
+# --- Notebooks (optional) ---
+.ipynb_checkpoints/

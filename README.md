@@ -60,6 +60,47 @@ Model predictions and visual explanations are experimental and should not replac
 
 ---
 
+## Model Performance Summary
+
+The current baseline model is a ResNet18 trained with transfer learning.
+
+**Final Test Performance:**
+
+- Test Accuracy: ~97.5%
+- Test Macro-F1: ~97.4%
+- Macro AUC (One-vs-Rest): ~0.99
+
+Training curves show stable convergence with minimal overfitting.
+
+---
+
+## Limitations
+
+While the model achieves strong performance on the current dataset, several important limitations must be acknowledged:
+
+1. **Public Dataset**  
+   The MRI dataset used in this project is publicly available and curated for academic purposes. It may not reflect the variability and complexity of real-world clinical data.
+
+2. **No Patient-Level Split**  
+   The dataset is split at the image level rather than at the patient level. If multiple slices from the same patient are present across splits, this may inflate performance metrics.
+
+3. **No External Validation**  
+   The model has not been evaluated on an independent external dataset from a different source or hospital.
+
+4. **Not a Clinical Diagnostic Tool**  
+   This project is strictly for educational and research demonstration purposes. It must not be used for medical diagnosis or clinical decision-making.
+
+---
+
+## Next Steps
+
+- Improve Grad-CAM localization quality
+- Explore Grad-CAM++ or smoothing techniques
+- Investigate patient-level splitting strategies
+- Integrate the model into a Streamlit-based explainable interface
+
+---
+
 ## Authors
 
 - Fernanda Hernandez

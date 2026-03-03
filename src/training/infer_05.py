@@ -7,7 +7,15 @@ from PIL import Image
 from torchvision import transforms
 
 from src.models.model_factory_03 import build_resnet18
-from src.data.dataset_01 import ID2LABEL
+
+ID2LABEL = {
+    0: "glioma",
+    1: "meningioma",
+    2: "no_tumor",
+    3: "pituitary",
+}
+LABEL2ID = {v: k for k, v in ID2LABEL.items()}
+CLASS_NAMES = [ID2LABEL[i] for i in range(len(ID2LABEL))]
 
 CHECKPOINT_PATH = os.path.join("outputs", "checkpoints", "best_model.pt")
 

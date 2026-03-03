@@ -1,4 +1,7 @@
+import sys
 import os
+sys.path.append(os.path.abspath("."))
+
 import numpy as np
 import streamlit as st
 import torch

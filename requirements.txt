@@ -5,6 +5,6 @@ torch
 torchvision
 scikit-learn
 matplotlib
-opencv-python
+opencv-python-headless
 scipy
 scikit-image

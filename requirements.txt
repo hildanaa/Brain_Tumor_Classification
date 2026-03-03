@@ -8,3 +8,6 @@ matplotlib
 opencv-python-headless
 scipy
 scikit-image
+pandas
+matplotlib
+reportlab

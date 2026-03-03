@@ -242,7 +242,7 @@ def build_pdf_report(
 def main():
     st.set_page_config(page_title="Brain Tumor MRI - Demo", layout="wide")
 
-    banner_path = "assets/banner_MRI.jpg"
+    banner_path = "assests/banner_MRI.jpg"
     if os.path.exists(banner_path):
         st_image(banner_path, use_container_width=True)
 

@@ -1,198 +1,103 @@
-import os, sys
-sys.path.insert(0, os.path.abspath("."))
+# src/app/app.py
 
+import os
+import sys
 import json
-from typing import Dict, Tuple, Any, Optional, List
+from typing import Dict, Any, Tuple, Optional, List
 
 import numpy as np
 import streamlit as st
 from PIL import Image
 
-# ----------------------------
-# UI COPY (Role 4)
-# ----------------------------
-try:
-    from src.app.copy import (
-        APP_TITLE,
-        TAGLINE,
-        UPLOAD_LABEL,
-        PRIMARY_CTA,
-        RESULTS_HEADER,
-        EXPLANATION_HEADER,
-        HEATMAP_HEADER,
-        CONFIDENCE_LABEL,
-        PROBABILITIES_LABEL,
-        DOWNLOAD_REPORT_LABEL,
-        DISCLAIMER_SHORT,
-        DISCLAIMER_LONG,
-        PRIVACY_NOTE,
-        ERROR_IMAGE,
-        ERROR_MODEL,
-    )
-except Exception:
-    # Fallback strings if copy.py isn't present yet
-    APP_TITLE = "Explainable Brain Tumor Detection Assistant"
-    TAGLINE = "Upload an MRI image → prediction + Grad-CAM overlay + explanation."
-    UPLOAD_LABEL = "Upload MRI image (PNG/JPG)"
-    PRIMARY_CTA = "Analyze"
-    RESULTS_HEADER = "Results"
-    EXPLANATION_HEADER = "Explanation"
-    HEATMAP_HEADER = "Model attention (Grad-CAM)"
-    CONFIDENCE_LABEL = "Confidence"
-    PROBABILITIES_LABEL = "Prediction probabilities"
-    DOWNLOAD_REPORT_LABEL = "Download report"
-    DISCLAIMER_SHORT = "⚠️ Educational/demo tool only — not medical advice and not a diagnosis."
-    DISCLAIMER_LONG = DISCLAIMER_SHORT
-    PRIVACY_NOTE = ""
-    ERROR_IMAGE = "Could not read the uploaded file as an image."
-    ERROR_MODEL = "Model is not available."
+# ---------------------------------------------------------
+# ✅ Streamlit Cloud fix: make repo root importable (so "src" works)
+# ---------------------------------------------------------
+sys.path.insert(0, os.path.abspath("."))
 
-
-# ----------------------------
-# PIPELINE IMPORTS (Roles 2–4)
-# ----------------------------
-REAL_PIPELINE = True
+# ---------------------------------------------------------
+# ✅ Try real pipeline imports (your real file names)
+# ---------------------------------------------------------
+REAL_PIPELINE = False
 IMPORT_ERRORS: List[str] = []
 
-# Inference (Role 2)
 try:
-    # Expected contract: predict(image) -> probs (np array), pred_label (str), pred_id (int)
-    # Some teams may name it predict_pil; we support both.
-    from src.models.infer import predict as predict_image  # type: ignore
+    from src.training.infer_05 import load_model, predict
 except Exception as e:
-    REAL_PIPELINE = False
     IMPORT_ERRORS.append(f"Inference import failed: {e}")
-    predict_image = None  # type: ignore
 
-# Grad-CAM (Role 3)
 try:
-    # Expected contract: gradcam(image, model, target_class=None) -> heatmap, overlay
-    from src.explain.gradcam import gradcam  # type: ignore
+    from src.explain.gradcam_06 import gradcam
 except Exception as e:
-    REAL_PIPELINE = False
     IMPORT_ERRORS.append(f"Grad-CAM import failed: {e}")
-    gradcam = None  # type: ignore
 
-# Heatmap features (Role 4)
 try:
-    from src.explain.heatmap_features import extract_features  # type: ignore
+    from src.explain.heatmap_features import extract_features
 except Exception as e:
-    REAL_PIPELINE = False
     IMPORT_ERRORS.append(f"Heatmap features import failed: {e}")
-    extract_features = None  # type: ignore
 
-# Text agent (Role 4)
 try:
-    from src.explain.text_agent import explain  # type: ignore
+    from src.explain.text_agent import explain
 except Exception as e:
-    REAL_PIPELINE = False
     IMPORT_ERRORS.append(f"Text agent import failed: {e}")
-    explain = None  # type: ignore
 
-# Confidence helper (Role 4)
-try:
-    from src.explain.confidence import confidence_from_probs  # type: ignore
-except Exception:
-    confidence_from_probs = None  # type: ignore
+REAL_PIPELINE = (len(IMPORT_ERRORS) == 0)
 
 
-# ----------------------------
-# OPTIONAL: Try to load class names if you store them
-# (Role 2 common practice: outputs/checkpoints/class_to_idx.json)
-# ----------------------------
-def load_class_names() -> Optional[List[str]]:
-    candidates = [
-        os.path.join("outputs", "checkpoints", "class_to_idx.json"),
-        os.path.join("outputs", "checkpoints", "classes.json"),
-        os.path.join("outputs", "metrics", "class_to_idx.json"),
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    obj = json.load(f)
-                # class_to_idx: {"glioma":0,...} -> invert
-                if isinstance(obj, dict) and all(isinstance(v, int) for v in obj.values()):
-                    inv = {v: k for k, v in obj.items()}
-                    return [inv[i] for i in range(len(inv))]
-                # classes: ["glioma", ...]
-                if isinstance(obj, list) and all(isinstance(x, str) for x in obj):
-                    return obj
-            except Exception:
-                pass
-    return None
+# ---------------------------------------------------------
+# Helper: consistent probs dict + label mapping
+# ---------------------------------------------------------
+def _to_probs_dict(probs: np.ndarray, class_names: List[str]) -> Dict[str, float]:
+    probs = np.asarray(probs, dtype=np.float32).ravel()
+    if len(probs) != len(class_names):
+        # fallback labels if mismatch
+        class_names = [f"class_{i}" for i in range(len(probs))]
+    return {class_names[i]: float(probs[i]) for i in range(len(probs))}
 
 
-CLASS_NAMES = load_class_names()
+def _topk(probs_dict: Dict[str, float], k: int) -> List[Tuple[str, float]]:
+    return sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:k]
 
 
-# ----------------------------
-# MODEL ACCESS FOR GRADCAM
-# ----------------------------
-@st.cache_resource(show_spinner=False)
-def load_model_for_gradcam():
-    """
-    Grad-CAM needs the model object. Different teams implement this differently.
-    We try common patterns:
-      - src.models.infer has load_model()
-      - src.models.infer exposes a cached model (MODEL or model)
-    If none exist, we return None and run in MOCK mode.
-    """
-    try:
-        import src.models.infer as infer_mod  # type: ignore
-
-        if hasattr(infer_mod, "load_model") and callable(infer_mod.load_model):
-            return infer_mod.load_model()
-
-        if hasattr(infer_mod, "MODEL"):
-            return infer_mod.MODEL
-
-        if hasattr(infer_mod, "model"):
-            return infer_mod.model
-
-    except Exception:
-        return None
-
-    return None
+def _confidence_from_probs(probs: np.ndarray) -> Tuple[str, float, float]:
+    p = np.asarray(probs, dtype=np.float32).ravel()
+    if p.size < 2:
+        return ("Low", float(p.max()) if p.size else 0.0, 0.0)
+    top2 = np.sort(p)[-2:]
+    p_top1 = float(top2[-1])
+    p_top2 = float(top2[-2])
+    margin = float(p_top1 - p_top2)
+    if p_top1 >= 0.80 and margin >= 0.20:
+        return ("High", p_top1, margin)
+    if p_top1 >= 0.60:
+        return ("Medium", p_top1, margin)
+    return ("Low", p_top1, margin)
 
 
-def probs_to_dict(probs: np.ndarray, class_names: Optional[List[str]]) -> Dict[str, float]:
-    p = np.asarray(probs, dtype=float).ravel()
-    if class_names and len(class_names) == len(p):
-        return {class_names[i]: float(p[i]) for i in range(len(p))}
-    # fallback labels
-    return {f"class_{i}": float(p[i]) for i in range(len(p))}
-
-
-# ----------------------------
+# ---------------------------------------------------------
 # STREAMLIT UI
-# ----------------------------
-st.set_page_config(page_title=APP_TITLE, layout="wide")
-st.title(f"🧠 {APP_TITLE}")
-st.caption(TAGLINE)
+# ---------------------------------------------------------
+st.set_page_config(page_title="Brain Tumor XAI Assistant", layout="wide")
 
-st.markdown(DISCLAIMER_SHORT)
-if DISCLAIMER_LONG:
-    with st.expander("Read full disclaimer", expanded=False):
-        st.write(DISCLAIMER_LONG)
-        if PRIVACY_NOTE:
-            st.write(PRIVACY_NOTE)
+st.title("🧠 Explainable Brain Tumor Detection Assistant")
+st.caption("Upload MRI → predict + Grad-CAM overlay + explanation text.")
+
+st.markdown(
+    "**Medical Disclaimer:** This tool is for educational/research purposes only and is not a medical diagnostic device. "
+    "Always consult a qualified healthcare professional for medical decisions."
+)
 
 with st.expander("⚙️ Settings", expanded=False):
     force_mock = st.checkbox("Force MOCK mode", value=False)
     show_heatmap_raw = st.checkbox("Show raw heatmap (debug)", value=False)
     top_k = st.slider("Top-k probabilities to display", 2, 6, 4)
 
-uploaded = st.file_uploader(UPLOAD_LABEL, type=["png", "jpg", "jpeg"])
+uploaded = st.file_uploader("Upload MRI image (png/jpg)", type=["png", "jpg", "jpeg"])
+
 if uploaded is None:
     st.info("Upload an image to start.")
     st.stop()
 
-try:
-    pil_img = Image.open(uploaded).convert("RGB")
-except Exception:
-    st.error(ERROR_IMAGE)
-    st.stop()
+pil_img = Image.open(uploaded).convert("RGB")
 
 col1, col2 = st.columns(2)
 
@@ -200,185 +105,159 @@ with col1:
     st.subheader("1) Input")
     st.image(pil_img, use_container_width=True)
 
-analyze = st.button(f"🔍 {PRIMARY_CTA}", type="primary")
+analyze = st.button("🔍 Analyze image", type="primary")
 if not analyze:
     st.stop()
 
-use_real = (REAL_PIPELINE and (not force_mock))
+use_real = REAL_PIPELINE and (not force_mock)
 
 st.write(
-    "Pipeline status →",
-    f"REAL_PIPELINE={REAL_PIPELINE}",
-    f"| use_real={use_real}",
-    f"| class_names={'yes' if CLASS_NAMES else 'no'}"
+    f"Pipeline status → REAL_PIPELINE={REAL_PIPELINE} | use_real={use_real}"
 )
-if IMPORT_ERRORS:
-    with st.expander("Import diagnostics", expanded=False):
+
+with st.expander("Import diagnostics", expanded=not REAL_PIPELINE):
+    if REAL_PIPELINE:
+        st.success("All imports OK ✅")
+    else:
         for msg in IMPORT_ERRORS:
-            st.code(msg)
+            st.error(msg)
 
+# ---------------------------------------------------------
+# Run pipeline (REAL or MOCK)
+# ---------------------------------------------------------
+# Default mock outputs (so UI never crashes)
+mock_class_names = ["glioma", "meningioma", "pituitary", "no_tumor"]
+mock_probs = np.array([0.10, 0.08, 0.05, 0.77], dtype=np.float32)
+mock_pred_id = int(np.argmax(mock_probs))
+mock_pred_label = mock_class_names[mock_pred_id]
 
-# ----------------------------
-# RUN PIPELINE
-# ----------------------------
+probs = mock_probs
+pred_label = mock_pred_label
+pred_id = mock_pred_id
+class_names = mock_class_names
+heatmap = np.zeros((224, 224), dtype=np.float32)
+overlay_pil = pil_img.copy()
+explanation_text = "Using MOCK mode."
+
 with st.spinner("Running analysis..."):
+    if use_real:
+        try:
+            # 1) load model (cached so it doesn't reload every time)
+            @st.cache_resource
+            def _cached_model():
+                return load_model()
 
-    if use_real and predict_image is not None:
-        # 1) Inference
-        # Expected: probs (np array), pred_label (str), pred_id (int)
-        out = predict_image(pil_img)
+            model = _cached_model()
 
-        # Support both (probs, pred_label, pred_id) and (probs_dict, pred_label)
-        pred_id = None
-        if isinstance(out, tuple) and len(out) == 3:
-            probs, pred_label, pred_id = out
-            probs = np.asarray(probs, dtype=float)
-            probs_dict = probs_to_dict(probs, CLASS_NAMES)
-        elif isinstance(out, tuple) and len(out) == 2:
-            probs_or_dict, pred_label = out
-            if isinstance(probs_or_dict, dict):
-                probs_dict = {k: float(v) for k, v in probs_or_dict.items()}
-                probs = np.array(list(probs_dict.values()), dtype=float)
-                if CLASS_NAMES is None:
-                    CLASS_NAMES = list(probs_dict.keys())  # type: ignore
+            # 2) predict
+            # Expect: probs, pred_label, pred_id OR probs, pred_label (handle both)
+            pred_out = predict(pil_img)
+
+            if isinstance(pred_out, tuple) and len(pred_out) == 3:
+                probs, pred_label, pred_id = pred_out
+            elif isinstance(pred_out, tuple) and len(pred_out) == 2:
+                probs, pred_label = pred_out
+                probs = np.asarray(probs, dtype=np.float32)
+                pred_id = int(np.argmax(probs))
             else:
-                probs = np.asarray(probs_or_dict, dtype=float)
-                probs_dict = probs_to_dict(probs, CLASS_NAMES)
-        else:
-            # Unknown output format -> fallback mock
-            use_real = False
+                raise ValueError("predict() must return (probs, pred_label) or (probs, pred_label, pred_id)")
 
-    if not use_real:
-        # MOCK fallback
-        probs_dict = {
-            "glioma": 0.10,
-            "meningioma": 0.08,
-            "pituitary": 0.05,
-            "no_tumor": 0.77,
-        }
-        pred_label = max(probs_dict, key=probs_dict.get)
-        probs = np.array([probs_dict[k] for k in probs_dict.keys()], dtype=float)
-        pred_id = None
-        overlay_pil = pil_img
-        heatmap = np.zeros((224, 224), dtype=np.float32)
+            probs = np.asarray(probs, dtype=np.float32).ravel()
 
-    # 2) Grad-CAM (needs model)
-    if use_real and gradcam is not None:
-        model = load_model_for_gradcam()
-        if model is None:
-            st.warning("Could not load model object for Grad-CAM. Showing MOCK overlay.")
-            overlay_pil = pil_img
-            heatmap = np.zeros((224, 224), dtype=np.float32)
-        else:
-            # target_class: prefer pred_id if available, else None
-            hm, overlay = gradcam(pil_img, model, target_class=pred_id)
-            heatmap = np.asarray(hm, dtype=np.float32)
-            overlay_pil = overlay if isinstance(overlay, Image.Image) else Image.fromarray(overlay)
+            # 3) infer class_names if your predict doesn't provide them:
+            # If your repo has a saved mapping file, you can load it here.
+            # For now, use defaults if lengths match.
+            if probs.size == len(mock_class_names):
+                class_names = mock_class_names
+            else:
+                class_names = [f"class_{i}" for i in range(probs.size)]
 
-    # 3) Heatmap features (Role 4)
-    if extract_features is not None:
-        try:
+            # 4) Grad-CAM: try common signatures
+            try:
+                heatmap, overlay_pil = gradcam(pil_img, model=model, target_class=pred_id)
+            except TypeError:
+                # maybe gradcam(pil_img, model, pred_id)
+                heatmap, overlay_pil = gradcam(pil_img, model, pred_id)
+
+            # 5) features + explanation
             feats = extract_features(heatmap)
-        except Exception:
-            feats = {
-                "focus_ratio": float((heatmap > 0.6).mean()) if isinstance(heatmap, np.ndarray) else 0.0,
-                "spread": 1.0,
-                "num_regions": None,
-                "center_of_mass_xy": [0.5, 0.5],
-            }
-    else:
-        feats = {
-            "focus_ratio": float((heatmap > 0.6).mean()) if isinstance(heatmap, np.ndarray) else 0.0,
-            "spread": 1.0,
-            "num_regions": None,
-            "center_of_mass_xy": [0.5, 0.5],
-        }
 
-    # 4) Text explanation (Role 4)
-    if explain is not None:
-        explanation_text = explain(pred_label, probs, feats, class_names=CLASS_NAMES)
-    else:
-        explanation_text = "Text explainer not available."
+            # Some text_agent versions accept class_names; try both
+            try:
+                explanation_text = explain(pred_label, probs, feats, class_names=class_names)
+            except TypeError:
+                probs_dict = _to_probs_dict(probs, class_names)
+                explanation_text = explain(pred_label, probs_dict, feats)
 
-    # 5) Confidence label (optional)
-    conf_level = None
-    if confidence_from_probs is not None:
-        try:
-            conf_level = confidence_from_probs(probs).get("level")
-        except Exception:
-            conf_level = None
+        except Exception as e:
+            st.warning("Real pipeline failed — falling back to MOCK outputs.")
+            st.exception(e)
 
+# ---------------------------------------------------------
+# Results
+# ---------------------------------------------------------
+probs_dict = _to_probs_dict(probs, class_names)
+conf_label, top1_prob, margin = _confidence_from_probs(probs)
 
-# ----------------------------
-# RESULTS UI
-# ----------------------------
 with col2:
-    st.subheader(f"2) {RESULTS_HEADER}")
-
-    top1_prob = float(probs_dict.get(pred_label, np.max(probs) if probs.size else 0.0))
+    st.subheader("2) Results")
     st.markdown(f"**Predicted class:** `{pred_label}`")
     st.markdown(f"**Top-1 probability:** `{top1_prob:.3f}`")
-    if conf_level:
-        st.markdown(f"**{CONFIDENCE_LABEL}:** `{conf_level}`")
+    st.markdown(f"**Confidence:** `{conf_label}`")
 
-    ordered = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    ordered = _topk(probs_dict, top_k)
 
-    st.write(f"**{PROBABILITIES_LABEL} (table)**")
+    st.write("**Prediction probabilities (table)**")
     st.dataframe(
         [{"class": k, "prob": float(v)} for k, v in ordered],
         use_container_width=True
     )
 
-    st.write(f"**{PROBABILITIES_LABEL} (bar chart)**")
-    chart_dict = {k: float(v) for k, v in ordered}
-    st.bar_chart(chart_dict)
+    st.write("**Prediction probabilities (bar chart)**")
+    st.bar_chart({k: float(v) for k, v in ordered})
 
 st.divider()
 
 col3, col4 = st.columns(2)
 
 with col3:
-    st.subheader(f"3) {HEATMAP_HEADER}")
+    st.subheader("3) Model attention (Grad-CAM)")
     st.image(overlay_pil, use_container_width=True)
 
-    if show_heatmap_raw:
-        st.caption("Heatmap (raw)")
-        # Streamlit can display 2D arrays as images
-        st.image(heatmap, clamp=True, use_container_width=True)
-
 with col4:
-    st.subheader(f"4) {EXPLANATION_HEADER}")
+    st.subheader("4) Explanation")
     st.markdown(explanation_text)
+
+if show_heatmap_raw:
+    st.subheader("Heatmap (raw)")
+    st.image(np.asarray(heatmap, dtype=np.float32), clamp=True)
 
 st.divider()
 
-# ----------------------------
-# DOWNLOAD REPORT
-# ----------------------------
+# ---------------------------------------------------------
+# Download report
+# ---------------------------------------------------------
 st.subheader("📄 Download report")
 
-report = f"""\
-{APP_TITLE}
+report = f"""Brain Tumor XAI Assistant Report
 
 Predicted class: {pred_label}
 Top-1 probability: {top1_prob:.4f}
-Confidence: {conf_level if conf_level else "N/A"}
+Confidence: {conf_label}
+Margin (top1 - top2): {margin:.4f}
 
 Probabilities:
 {json.dumps(probs_dict, indent=2)}
-
-Heatmap features:
-{json.dumps(feats, indent=2)}
 
 Explanation:
 {explanation_text}
 
 Disclaimer:
-{DISCLAIMER_SHORT}
+Educational/research only. Not medical advice or diagnosis.
 """
 
 st.download_button(
-    DOWNLOAD_REPORT_LABEL,
+    "Download report (TXT)",
     data=report,
     file_name="report.txt",
     mime="text/plain",

@@ -1,5 +1,7 @@
+import os, sys
+sys.path.insert(0, os.path.abspath("."))
+
 import json
-import os
 from typing import Dict, Tuple, Any, Optional, List
 
 import numpy as np

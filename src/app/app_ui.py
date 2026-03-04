@@ -10,11 +10,13 @@ import torch
 import matplotlib.pyplot as plt
 from PIL import Image
 from torchvision import transforms
+from typing import Optional
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
+from src.explain.mask_09 import brain_mask_from_pil, apply_mask
 from src.models.model_factory_03 import build_resnet18
 from src.explain.gradcam_06 import GradCAM
 from src.explain.overlay_07 import overlay_heatmap_on_pil
@@ -76,11 +78,15 @@ def build_eval_transform(image_size=224):
 # -------- Load model --------
 @st.cache_resource
 def load_model_and_cam(checkpoint_path: str, device: str):
-    model, target_layer = build_resnet18(num_classes=len(CLASS_NAMES), pretrained=False)
+    model, _ = build_resnet18(num_classes=len(CLASS_NAMES), pretrained=False)
     ckpt = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(ckpt["model_state"])
     model.to(device).eval()
+
+    # ✅ Force layer4 for best Grad-CAM++
+    target_layer = model.layer4
     cam = GradCAM(model, target_layer)
+
     return model, cam
 
 
@@ -119,7 +125,7 @@ def _pil_to_png_bytes(pil_img: Image.Image, max_w: int = 900) -> bytes:
 
 
 def build_pdf_report(
-    banner_path: str | None,
+    banner_path: Optional[str],
     input_img: Image.Image,
     overlay_img: Image.Image,
     pretty_pred: str,
@@ -139,7 +145,11 @@ def build_pdf_report(
             banner = Image.open(banner_path).convert("RGB")
             banner_bytes = _pil_to_png_bytes(banner, max_w=1100)
             banner_reader = ImageReader(io.BytesIO(banner_bytes))
-            c.drawImage(banner_reader, 40, y - 120, width=W - 80, height=110, preserveAspectRatio=True, mask='auto')
+            c.drawImage(
+                banner_reader, 40, y - 120,
+                width=W - 80, height=110,
+                preserveAspectRatio=True, mask='auto'
+            )
             y -= 140
         except Exception:
             pass
@@ -301,11 +311,24 @@ def main():
     with st.spinner("Running prediction + Grad-CAM..."):
         x, probs, pred_id, pred_label = predict_probs(model, pil_img, device)
 
-        heatmap_t = cam.generate(x, class_idx=pred_id)
-        overlay_img = overlay_heatmap_on_pil(pil_img, heatmap_t, alpha=alpha)
+        # ✅ Skip overlay for No Tumor
+        if pred_label == "notumor":
+            overlay_img = pil_img  # keep valid image for UI + PDF
+            heatmap_np = None
+            feats = {"note": "No heatmap generated because prediction is 'No tumor'."}
+        else:
+            # ✅ Grad-CAM++ (layer4 already fixed in load_model_and_cam)
+            heatmap_t = cam.generate_pp(x, class_idx=pred_id)
 
-        heatmap_np = heatmap_t.detach().cpu().numpy()
-        feats = extract_features(heatmap_np, threshold=threshold, compute_regions=True)
+            # ✅ Mask outside brain (use 224x224 to match heatmap)
+            pil_224 = pil_img.resize((224, 224))
+            mask = brain_mask_from_pil(pil_224, size=(224, 224))
+            heatmap_t = apply_mask(heatmap_t, mask)
+
+            overlay_img = overlay_heatmap_on_pil(pil_224, heatmap_t, alpha=alpha)
+            heatmap_np = heatmap_t.detach().cpu().numpy()
+
+            feats = extract_features(heatmap_np, threshold=threshold, compute_regions=True)
 
         explanation = explain(
             pred_label=pred_label,
@@ -342,13 +365,12 @@ def main():
     with tab1:
         st.markdown("### 2) Results")
 
-        # Download button (PDF)
         st.download_button(
             label="⬇️ Download report (PDF)",
             data=pdf_bytes,
             file_name="brain_tumor_report.pdf",
             mime="application/pdf",
-            use_container_width=True,  # safe via Streamlit (if error, it’s ok; download_button supports it in modern versions)
+            use_container_width=True,
         )
 
         m1, m2, m3 = st.columns(3)
@@ -363,7 +385,11 @@ def main():
 
         with c2:
             st.subheader("Grad-CAM overlay")
-            st_image(overlay_img, use_container_width=True)
+            if pred_label == "notumor":
+                st.info("No tumor detected. Grad-CAM overlay is not generated for 'No tumor' predictions.")
+                st_image(pil_img, use_container_width=True)
+            else:
+                st_image(overlay_img, use_container_width=True)
 
         st.markdown("---")
         st.subheader("Class probabilities")
@@ -377,7 +403,6 @@ def main():
         )
         st_dataframe(styled, use_container_width=True, hide_index=True)
 
-        # Medical-style bars (tight + teal)
         labels = df_probs["Class"].tolist()
         values = df_probs["Probability"].tolist()
 

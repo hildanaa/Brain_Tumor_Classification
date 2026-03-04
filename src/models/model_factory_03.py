@@ -10,7 +10,7 @@ def build_resnet18(num_classes: int = 4, pretrained: bool = True):
     model.fc = nn.Linear(in_features, num_classes)
 
     # Para Grad-CAM en ResNet: target típico = model.layer4
-    target_layer = model.layer4
+    target_layer = model.layer3
 
     return model, target_layer
 

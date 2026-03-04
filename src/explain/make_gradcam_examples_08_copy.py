@@ -49,10 +49,14 @@ def main():
     sample = random.sample(all_imgs, k=min(12, len(all_imgs)))
     for i, path in enumerate(sample, start=1):
         pil = Image.open(path).convert("RGB")
-        x = tfm(pil).unsqueeze(0).to(device)
+        pil_224 = pil.resize((224,224))
+        x = tfm(pil_224).unsqueeze(0).to(device)
 
         heatmap = cam.generate(x)
-        overlay = overlay_heatmap_on_pil(pil.resize((224,224)), heatmap, alpha=0.30, top_quantile=0.75)
+        mask = brain_mask_from_pil(pil_224, size=(224,224))
+        heatmap = apply_mask(heatmap, mask)
+
+        overlay = overlay_heatmap_on_pil(pil_224, heatmap, alpha=0.30, top_quantile=0.80)
 
         out = f"outputs/figures/gradcam_examples/example_{i:02d}.png"
         overlay.save(out)
